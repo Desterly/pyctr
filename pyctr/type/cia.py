@@ -17,6 +17,7 @@ from ..fileio import SubsectionIO
 from ..util import readle, roundup
 from .base import TypeReaderCryptoBase
 from .ncch import NCCHReader
+from .srl import SRLReader
 from .tmd import TitleMetadataReader
 
 if TYPE_CHECKING:
@@ -231,11 +232,13 @@ class CIAReader(TypeReaderCryptoBase):
             add_region(record.cindex, curr_offset, record.size, iv)
             if load_contents:
                 # check if the content is a Nintendo DS ROM (SRL) first
+                content_fp = self.open_raw_section(record.cindex)
                 is_srl = record.cindex == 0 and self.tmd.title_id[3:5] == '48'
                 if not is_srl:
-                    content_fp = self.open_raw_section(record.cindex)
                     self.contents[record.cindex] = NCCHReader(content_fp, case_insensitive=case_insensitive,
                                                               dev=dev)
+                else:
+                    self.contents[record.cindex] = SRLReader(content_fp) 
 
             curr_offset += record.size
 
