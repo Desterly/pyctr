@@ -4,10 +4,12 @@
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
+from cgitb import small
 from types import MappingProxyType
-from typing import TYPE_CHECKING, NamedTuple
+from typing import List, TYPE_CHECKING, NamedTuple
 
 from ..common import PyCTRError
+from ..util import readle
 
 if TYPE_CHECKING:
     from os import PathLike
@@ -46,6 +48,18 @@ _region_order_check = (
     'Traditional Chinese',
 )
 
+# Region Lockout names
+_region_lock_names = (
+    'JPN',
+    'USA',
+    'EUR',
+    'EUR',
+    'CHN',
+    'KOR',
+    'TWN',
+    'FREE'
+)
+
 
 class SMDHError(PyCTRError):
     """Generic exception for SMDH operations."""
@@ -70,8 +84,11 @@ class SMDH:
 
     # TODO: support other settings
 
-    def __init__(self, names: 'Dict[str, AppTitle]'):
+    def __init__(self, names: 'Dict[str, AppTitle]', regions_allowed: 'List[str]' = {}, small_icon = None, large_icon = None):
         self.names: Mapping[str, AppTitle] = MappingProxyType({n: names.get(n, None) for n in region_names})
+        self.regions_allowed: List[str] = regions_allowed
+        self.small_icon = small_icon
+        self.large_icon = large_icon
 
     def __repr__(self):
         return f'<{type(self).__name__} title: {self.get_app_title().short_desc}>'
@@ -104,7 +121,22 @@ class SMDH:
             names[region] = AppTitle(app_title[0:0x80].decode('utf-16le').strip('\0'),
                                      app_title[0x80:0x180].decode('utf-16le').strip('\0'),
                                      app_title[0x180:0x200].decode('utf-16le').strip('\0'))
-        return cls(names)
+
+        regions_allowed = []
+        region_lockout = readle(smdh[0x2018:0x2018+4])
+        if region_lockout == 0x7fffffff:
+            regions = "ALL"
+        else:
+            for i in range(7):
+                bit = region_lockout & (1 << i)
+                if bit != 0:
+                    regions_allowed.append(_region_lock_names[i])
+            regions_allowed = set(regions_allowed)
+
+        small_icon = smdh[0x2040 : 0x2040 + 0x480]
+        large_icon = smdh[0x24C0 : 0x24C0 + 0x1200]
+        return cls(names, regions_allowed, small_icon, large_icon)
+
 
     @classmethod
     def from_file(cls, fn: 'Union[PathLike, str, bytes]') -> 'SMDH':
