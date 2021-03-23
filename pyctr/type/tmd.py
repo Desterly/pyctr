@@ -4,6 +4,7 @@
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
+from enum import IntFlag, _decompose
 from hashlib import sha256
 from struct import pack
 from typing import TYPE_CHECKING, NamedTuple
@@ -81,6 +82,49 @@ class UnusualInfoRecordError(InvalidTMDError):
         return f'Attempted to hash twice: {self.args[0]}, {self.args[1]}'
 
 
+class ContentCategories(IntFlag):
+    Normal = 0x0
+    DlpChild = 0x1
+    Demo = 0x2
+    Contents = 0x3
+    AddOnContents = 0x4
+    Patch = 0x6
+    CannotExecution = 0x8
+    System = 0x10
+    RequireBatchUpdate = 0x20
+    NotRequireUserApproval = 0x40
+    NotRequireRightForMount = 0x80
+    CanSkipConvertJumpId = 0x100
+    TWL = 0x8000
+
+    def __str__(self):
+        cls = self.__class__
+        if self._name_ is not None:
+            return "%s" % (self._name_)
+        members, uncovered = _decompose(cls, self._value_)
+        if len(members) == 1 and members[0]._name_ is None:
+            return "%r" % (members[0]._value_)
+        else:
+            return "%s" % (",".join([str(m._name_ or m._value_) for m in members]),)
+
+    def to_list(self):
+        listvalues = []
+        if self._name_ is not None:
+            listvalues.append(self._name_)
+        members, uncovered = _decompose(ContentCategories, self._value_)
+        if len(members) == 1 and members[0]._name_ is None:
+            listvalues.append(members[0]._value_)
+        else:
+            for m in members:
+                listvalues.append(str(m._name_ or m._value_))
+        return listvalues
+
+    @classmethod
+    def from_bytes(cls, bytes):
+        intvalue = int.from_bytes(bytes, "big")
+        return cls(intvalue)
+
+
 class ContentTypeFlags(NamedTuple):
     encrypted: bool
     disc: bool
@@ -152,14 +196,14 @@ class TitleMetadataReader:
     https://www.3dbrew.org/wiki/Title_metadata
     """
 
-    __slots__ = ('title_id', 'save_size', 'srl_save_size', 'title_version', 'info_records',
+    __slots__ = ('title_id', 'save_size', 'srl_save_size', 'title_version', 'title_content_categories', 'info_records',
                  'chunk_records', 'content_count', 'signature', '_u_issuer', '_u_version', '_u_ca_crl_version',
                  '_u_signer_crl_version', '_u_reserved1', '_u_system_version', '_u_title_type', '_u_group_id',
                  '_u_reserved2', '_u_srl_flag', '_u_reserved3', '_u_access_rights', '_u_boot_count', '_u_padding')
 
     # arguments prefixed with _u_ are values unused by the 3DS and/or are only kept around to generate the final tmd
     def __init__(self, *, title_id: str, save_size: int, srl_save_size: int, title_version: TitleVersion,
-                 info_records: 'Iterable[ContentInfoRecord]', chunk_records: 'Iterable[ContentChunkRecord]',
+                 title_content_categories: 'List[int]', info_records: 'Iterable[ContentInfoRecord]', chunk_records: 'Iterable[ContentChunkRecord]',
                  signature=BLANK_SIG_PAIR, _u_issuer='Root-CA00000003-CP0000000b', _u_version=1, _u_ca_crl_version=0,
                  _u_signer_crl_version=0, _u_reserved1=0, _u_system_version=b'\0' * 8, _u_title_type=b'\0\0\0@',
                  _u_group_id=b'\0\0', _u_reserved2=b'\0\0\0\0', _u_srl_flag=0, _u_reserved3=b'\0' * 0x31,
@@ -169,6 +213,7 @@ class TitleMetadataReader:
         self.save_size = save_size
         self.srl_save_size = srl_save_size
         self.title_version = title_version
+        self.title_content_categories = title_content_categories
         self.info_records = tuple(info_records)
         self.chunk_records = tuple(chunk_records)
         self.content_count = len(self.chunk_records)
@@ -257,6 +302,8 @@ class TitleMetadataReader:
         # only values that actually have a use are loaded here. (currently)
         # several fields in were left in from the Wii tmd and have no function on 3DS.
         title_id = header[0x4C:0x54].hex()
+        content_category = ContentCategories.from_bytes(header[0x4E:0x50])
+        title_content_categories = content_category.to_list()
         save_size = readle(header[0x5A:0x5E])
         srl_save_size = readle(header[0x5E:0x62])
         title_version = TitleVersion.from_int(readbe(header[0x9C:0x9E]))
@@ -323,8 +370,8 @@ class TitleMetadataReader:
         u_padding = header[0xA2:0xA4]
 
         return cls(title_id=title_id, save_size=save_size, srl_save_size=srl_save_size, title_version=title_version,
-                   info_records=info_records, chunk_records=chunk_records, signature=(sig_type, signature),
-                   _u_issuer=u_issuer, _u_version=u_version, _u_ca_crl_version=u_ca_crl_version,
+                   title_content_categories=title_content_categories, info_records=info_records, chunk_records=chunk_records, 
+                  signature=(sig_type, signature), _u_issuer=u_issuer, _u_version=u_version, _u_ca_crl_version=u_ca_crl_version,
                    _u_signer_crl_version=u_signer_crl_version, _u_reserved1=u_reserved1,
                    _u_system_version=u_system_version, _u_title_type=u_title_type, _u_group_id=u_group_id,
                    _u_reserved2=u_reserved2, _u_srl_flag=u_srl_flag, _u_reserved3=u_reserved3,
