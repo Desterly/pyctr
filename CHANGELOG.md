@@ -1,4 +1,33 @@
-## Next
+## v0.5.1 - June 28, 2021
+* Fix arbitrary reads in the first 0x10 block of `CBCFileIO`
+
+## v0.5.0 - June 26, 2021
+### Highlights
+A new `sdtitle` module with `SDTitleReader` is added to read titles installed on an SD card. When used directly, it works with contents that are not SD encrypted. To open a title on a 3DS SD card that is SD encrypted, a new method is added to `sd.SDFilesystem`: `open_title`.
+
+SMDH icons are now loaded using [Pillow](https://python-pillow.org/).
+
+SMDH flags are now loaded.
+
+The ExeFS in NCCH contents is now fully decrypted properly. This means there is no longer garbage at the last block of the `.code` section for titles that use extra NCCH keys. This was achieved by rewriting the ExeFS section to concatenate multiple file-like objects that use different keyslots with a new class, `SplitFileMerger`.
+
+### Changelog
+* Add `_raise_if_file_closed_generic` to `pyctr.common`
+* Add `SplitFileMerger` to `pyctr.fileio` to merge multiple file-like objects into one (currently no support for writing)
+* Support closing all subfiles in `SplitFileMerger`
+* Rewrite ExeFS handling in `NCCHReader` to use `SplitFileMerger` to merge multiple `SubsectionIO` files to handle the parts that use different encryption, and update `FullDecrypted` to use it when reading ExeFS
+* Add `from_bytes` classmethod to `NCCHFlags`
+* Always use the internal ExeFS file object when reading it for FullDecrypted
+* Add docstrings to `NCCHFlags`
+* Add dependency on `Pillow>=8.2`
+* Load SMDH icons using Pillow/PIL, stored in new attributes in the `SMDH` class: `icon_small`, `icon_large`
+* Load SMDH flags into a new `SMDHFlags` class
+* Add `isfile` and `isdir` methods to `SDFilesystem`, convert path to string in `sd.normalize_sd_path` to make it easier to use any `os.PathLike` object (e.g. `pathlib.PurePosixPath`)
+* Add `sdtitle` module with `SDTitleReader` class, to read titles installed to the SD card inside "Nintendo 3DS"
+* Add `open_title` method to `SDFilesystem` to open a title using `SDTitleReader`, and a new `MissingTitleError` exception
+* Update type hints in `sd`
+
+## v0.4.7 - April 20, 2021
 * Use absolute paths in `CDNReader`
 * Use absolute paths in `SDFilesystem`
 * Make `SubsectionIO` objects hashable (if the underlying file object is)
@@ -7,6 +36,12 @@
 * Use a `frozenset` on a closed `CDNReader` object's internal open files set
 * Don't set `__del__` directly to `close` in `TypeReaderBase`, in case `close` is overridden
 * Auto-close opened files based on a reader when the reader closes (applies to `CCIReader`, `CIAReader`, `ExeFSReader`, `NCCHReader`, and `RomFSReader`)
+* Add new pseudo-keyslot `NCCHExtraKey` to store the second keyslot data for NCCH contents
+  * This is important because there exist titles that use Original NCCH but with a seed. Before this change, the key in the `NCCH` keyslot would be overwritten, causing everything but the special regions (ExeFS .code and RomFS) to be improperly decrypted.
+* Use `NCCHExtraKey` for the second keyslot instead of the actual keyslot in `NCCHReader`
+* Set `_open_files` before opening the file in `TypeReaderBase` to prevent an additional error if opening the file fails
+* Don't set KeyX and KeyY separately if fixed crypto key is used without an extra crypto method
+* Fix sections in `CCIReader` not opening, raising an error
 
 ## v0.4.6 - March 1, 2021
 * Add pycryptodomex version requiremenet range (`>=3.9,<4`)

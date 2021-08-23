@@ -6,17 +6,21 @@
 
 """Module for interacting with encrypted SD card contents under the "Nintendo 3DS" directory."""
 
-from os import PathLike, fsdecode
+from os import fsdecode
+from os.path import isfile, isdir
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..common import PyCTRError
 from ..crypto import CryptoEngine, KeyslotMissingError, Keyslot
+from .sdtitle import SDTitleReader
 
 if TYPE_CHECKING:
+    from os import PathLike
+    from typing import BinaryIO, List, Union
+
     # noinspection PyProtectedMember
     from ..crypto import CTRFileIO
-    from typing import BinaryIO, Union
 
 
 class SDFilesystemError(PyCTRError):
@@ -35,8 +39,12 @@ class MissingID1Error(SDFilesystemError):
     """No ID1 directories exist in the ID0 directory."""
 
 
-def normalize_sd_path(path: str):
-    return path.lstrip('/').lstrip('\\')
+class MissingTitleError(SDFilesystemError):
+    """The requested Title ID could not be found."""
+
+
+def normalize_sd_path(path: 'Union[PathLike, str]'):
+    return str(path).lstrip('/').lstrip('\\')
 
 
 class SDFilesystem:
@@ -102,7 +110,7 @@ class SDFilesystem:
             id1 = self.current_id1
         return self._id0_path / id1 / path
 
-    def open(self, path: str, mode: str = 'rb', *, id1: str = None) -> 'CTRFileIO':
+    def open(self, path: 'Union[PathLike, str]', mode: str = 'rb', *, id1: str = None) -> 'CTRFileIO':
         """
         Opens a file in the SD filesystem, allowing decrypted access.
 
@@ -134,7 +142,7 @@ class SDFilesystem:
         fh: BinaryIO = real_path.open(mode)
         return self._crypto.create_ctr_io(Keyslot.SD, fh, self._crypto.sd_path_to_iv('/' + path))
 
-    def listdir(self, path: str, id1: str = None) -> list:
+    def listdir(self, path: 'Union[PathLike, str]', id1: str = None) -> 'List[str]':
         """
         Returns a list of files in the directory.
 
@@ -145,3 +153,58 @@ class SDFilesystem:
         """
         real_path = self._get_real_path(normalize_sd_path(path), id1)
         return list(x.name for x in real_path.iterdir())
+
+    def isfile(self, path: 'Union[PathLike, str]', id1: str = None) -> bool:
+        """
+        Checks if the path points to a file.
+
+        :param path: Path to check.
+        :param id1: ID1 directory to use. Defaults to current_id1.
+        :return: `True` if the file exists, `False` otherwise.
+        :rtype: bool
+        """
+        real_path = self._get_real_path(normalize_sd_path(path), id1)
+        return isfile(real_path)
+
+    def isdir(self, path: 'Union[PathLike, str]', id1: str = None) -> bool:
+        """
+        Checks if the path points to a directory.
+
+        :param path: Path to check.
+        :param id1: ID1 directory to use. Defaults to current_id1.
+        :return: `True` if the file exists, `False` otherwise.
+        :rtype: bool
+        """
+        real_path = self._get_real_path(normalize_sd_path(path), id1)
+        return isdir(real_path)
+
+    def open_title(self, title_id: str, *, case_insensitive: bool = False, seed: bytes = None,
+                   load_contents: bool = True, id1: str = None) -> SDTitleReader:
+        """
+        Open a title's contents for reading.
+
+        In the case where a title's directory has multiple tmd files, the first one returned by :meth:`listdir` is
+        used.
+
+        :param title_id: Title ID to open.
+        :param case_insensitive: Use case-insensitive paths for the RomFS of each NCCH container.
+        :param seed: Seed to use. This is a quick way to add a seed using :func:`~.seeddb.add_seed`.
+        :param load_contents: Load each partition with :class:`~.NCCHReader`.
+        :param id1: ID1 directory to use. Defaults to current_id1.
+        :return: Opened title contents.
+        :rtype: SDTitleReader
+        """
+        id1 = id1 or self.current_id1
+        title_id = title_id.lower()
+        sd_path = f'/title/{title_id[0:8]}/{title_id[8:16]}/content'
+
+        tmd_path = None
+        for f in self.listdir(sd_path):
+            if f.endswith('.tmd'):
+                tmd_path = sd_path + '/' + f
+                break
+        else:
+            raise MissingTitleError(title_id)
+
+        return SDTitleReader(tmd_path, case_insensitive=case_insensitive, dev=self._crypto.dev, seed=seed,
+                             load_contents=load_contents, sdfs=self, sd_id1=id1)

@@ -161,6 +161,12 @@ class Keyslot(IntEnum):
     New3DSKeySector = 0x43
     """Used to decrypt the secret key sector (sector 0x96) for the New Nintendo 3DS."""
 
+    NCCHExtraKey = 0x44
+    """
+    Stores a version of another keyslot used for NCCH titles. For titles without a seed, KeyY is taken from the NCCH
+    header. For titles with a seed, KeyY is seeded. KeyX is always the same as the source keyslot.
+    """
+
 
 common_key_y = (
     # eShop
@@ -964,6 +970,7 @@ class CBCFileIO(_CryptoFileBase):
             before = offset % 16
             if offset - before == 0:
                 iv = self._iv
+                self._reader.seek(0)
             else:
                 # seek back one block to read it as iv
                 self._reader.seek(-0x10 - before, 1)

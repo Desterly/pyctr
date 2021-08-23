@@ -5,9 +5,9 @@ with open('README.md', 'r', encoding='utf-8') as f:
 
 setup(
     name='pyctr',
-    version='0.4.7b1',
+    version='0.5.1',
     packages=find_packages(),
-    install_requires=['pycryptodomex>=3.9,<4'],
+    install_requires=['pycryptodomex>=3.9,<4', 'Pillow>=8.2'],
     python_requires='>=3.6',
     url='https://github.com/ihaveamac/pyctr',
     license='MIT',

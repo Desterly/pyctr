@@ -5,8 +5,11 @@
 # You can find the full license text in LICENSE in the root of this project.
 
 from cgitb import small
+from struct import pack
 from types import MappingProxyType
 from typing import List, TYPE_CHECKING, NamedTuple
+
+from PIL import Image
 
 from ..common import PyCTRError
 from ..util import readle
@@ -75,20 +78,112 @@ class AppTitle(NamedTuple):
     publisher: str
 
 
+class SMDHFlags(NamedTuple):
+    Visible: bool
+    """Icon is visible at the HOME Menu"""
+
+    AutoBoot: bool
+    """Auto-boot this game card title"""
+
+    Allow3D: bool
+    """Title uses 3D (this is only for parental controls, it does not actually disable 3D if this flag is not set)"""
+
+    RequireEULA: bool
+    """Require accepting the EULA before being launched from the HOME Menu"""
+
+    AutoSave: bool
+    """Title auto-saves on exit (this means there will not be a prompt to save when attempting to close)"""
+
+    ExtendedBanner: bool
+    """Title uses an extended banner"""
+
+    RatingRequired: bool
+    """Region-specific game rating required"""
+
+    SaveData: bool
+    """Title uses save data (this will prompt the user that unsaved data will be lost, unless AutoSave is set)"""
+
+    RecordUsage: bool
+    """Application usage is recorded (when not set, the icon is not stored in the icon cache)"""
+
+    NoSaveBackups: bool
+    """Disable Save-Data Backup"""
+
+    New3DS: bool
+    """Exclusive to New Nintendo 3DS"""
+
+    @classmethod
+    def from_bytes(cls, flag_bytes: bytes):
+        flags = int.from_bytes(flag_bytes, 'little')
+        return cls(Visible=bool(flags & 0x1),
+                   AutoBoot=bool(flags & 0x2),
+                   Allow3D=bool(flags & 0x4),
+                   RequireEULA=bool(flags & 0x8),
+                   AutoSave=bool(flags & 0x10),
+                   ExtendedBanner=bool(flags & 0x20),
+                   RatingRequired=bool(flags & 0x40),
+                   SaveData=bool(flags & 0x80),
+                   RecordUsage=bool(flags & 0x100),
+                   NoSaveBackups=bool(flags & 0x400),
+                   New3DS=bool(flags & 0x1000))
+
+
+# Based on:
+# https://github.com/Steveice10/FBI/blob/c6d92d86b27aaef784d1ecb4103e1346fb0f8a12/source/core/screen.c#L211-L221
+def next_pow_2(i: int):
+    i -= 1
+    i |= i >> 1
+    i |= i >> 2
+    i |= i >> 4
+    i |= i >> 8
+    i |= i >> 16
+    i += 1
+
+    return i
+
+
+def rgb565_to_rgb888(data: bytes):
+    n = int.from_bytes(data, 'little')
+    r = (((n >> 11) & 0x1F) * 0xFF // 0x1F) & 0xFF
+    g = (((n >> 5) & 0x3F) * 0xFF // 0x3F) & 0xFF
+    b = ((n & 0x1F) * 0xFF // 0x1F) & 0xFF
+    return pack('>BBB', r, g, b)
+
+
+# Based on:
+# https://github.com/Steveice10/FBI/blob/c6d92d86b27aaef784d1ecb4103e1346fb0f8a12/source/core/screen.c#L305-L323
+def load_tiled_rgb565(data: bytes, width: int, height: int):
+    pixel_size = len(data) // width // height
+
+    pixels = []
+
+    for x in range(width):
+        for y in range(height):
+            pixel_offset = ((((y >> 3) * (width >> 3) + (x >> 3)) << 6) + ((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3))) * pixel_size
+
+            pixel = rgb565_to_rgb888(data[pixel_offset:pixel_offset + pixel_size])
+
+            pixels.append(pixel)
+
+    img = Image.frombytes('RGB', (width, height), b''.join(pixels))
+    return img.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.ROTATE_90)
+
+
 class SMDH:
     """
-    Class for 3DS SMDH. Icon data is currently not supported.
+    Class for 3DS SMDH.
 
     https://www.3dbrew.org/wiki/SMDH
     """
 
     # TODO: support other settings
 
-    def __init__(self, names: 'Dict[str, AppTitle]', regions_allowed: 'List[str]' = {}, small_icon = None, large_icon = None):
+    def __init__(self, names: 'Dict[str, AppTitle]', regions_allowed: 'List[str]' = {}, icon_small: 'Image', icon_large: 'Image', flags: SMDHFlags):
         self.names: Mapping[str, AppTitle] = MappingProxyType({n: names.get(n, None) for n in region_names})
         self.regions_allowed: List[str] = regions_allowed
-        self.small_icon = small_icon
-        self.large_icon = large_icon
+        self.small_icon = icon_small
+        self.large_icon = icon_largelarge
+        self.flags = flags
 
     def __repr__(self):
         return f'<{type(self).__name__} title: {self.get_app_title().short_desc}>'
@@ -133,9 +228,16 @@ class SMDH:
                     regions_allowed.append(_region_lock_names[i])
             regions_allowed = set(regions_allowed)
 
-        small_icon = smdh[0x2040 : 0x2040 + 0x480]
-        large_icon = smdh[0x24C0 : 0x24C0 + 0x1200]
-        return cls(names, regions_allowed, small_icon, large_icon)
+        icon_raw_small = smdh[0x2040:0x24C0]
+        icon_raw_large = smdh[0x24C0:0x36C0]
+        # This is assuming icon data is RGB565, but 3dbrew says other formats are possible. Though every known example
+        # uses RGB565 and there doesn't seem to be a way to tell which one is being used.
+        icon_small = load_tiled_rgb565(icon_raw_small, 24, 24)
+        icon_large = load_tiled_rgb565(icon_raw_large, 48, 48)
+
+        flags_raw = smdh[0x2028:0x202C]
+        flags = SMDHFlags.from_bytes(flags_raw)
+        return cls(names, regions_allowed, icon_small, icon_large, flags)
 
 
     @classmethod
