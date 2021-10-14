@@ -178,11 +178,11 @@ class SMDH:
 
     # TODO: support other settings
 
-    def __init__(self, names: 'Dict[str, AppTitle]', regions_allowed: 'List[str]' = {}, icon_small: 'Image', icon_large: 'Image', flags: SMDHFlags):
+    def __init__(self, names: 'Dict[str, AppTitle]', regions_allowed: 'List[str]', icon_small: 'Image', icon_large: 'Image', flags: SMDHFlags):
         self.names: Mapping[str, AppTitle] = MappingProxyType({n: names.get(n, None) for n in region_names})
         self.regions_allowed: List[str] = regions_allowed
         self.small_icon = icon_small
-        self.large_icon = icon_largelarge
+        self.large_icon = icon_large
         self.flags = flags
 
     def __repr__(self):
@@ -219,8 +219,8 @@ class SMDH:
 
         regions_allowed = []
         region_lockout = readle(smdh[0x2018:0x2018+4])
-        if region_lockout == 0x7fffffff:
-            regions = "ALL"
+        if region_lockout == 0x7FFFFFFF:
+            regions_allowed = ["Region Free"]
         else:
             for i in range(7):
                 bit = region_lockout & (1 << i)

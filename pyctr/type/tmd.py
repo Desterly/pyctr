@@ -116,7 +116,8 @@ class ContentCategories(IntFlag):
             listvalues.append(members[0]._value_)
         else:
             for m in members:
-                listvalues.append(str(m._name_ or m._value_))
+                if str(m._name_ or m._value_) not in listvalues:
+                    listvalues.append(str(m._name_ or m._value_))
         return listvalues
 
     @classmethod
