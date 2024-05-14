@@ -232,6 +232,7 @@ class SMDH:
     def __init__(self, names: 'Dict[str, AppTitle]', icon_small_array: 'List[List[RGBTuple]]',
                  icon_large_array: 'List[List[RGBTuple]]', flags: SMDHFlags, region_lockout: SMDHRegionLockout):
         self.names: Mapping[str, AppTitle] = MappingProxyType({n: names.get(n, None) for n in region_names})
+        self.icon_small_array = icon_small_array
         self.icon_large_array = icon_large_array
         self.flags = flags
         self.region_lockout = region_lockout

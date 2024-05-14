@@ -4,13 +4,13 @@
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
-from enum import IntFlag, _decompose
+from enum import IntFlag
 from hashlib import sha256
 from struct import pack
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..common import PyCTRError, get_fs_file_object
-from ..util import readbe, readle
+from ..util import decompose, readbe, readle
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Iterable, Optional
@@ -104,7 +104,7 @@ class ContentCategories(IntFlag):
         cls = self.__class__
         if self._name_ is not None:
             return "%s" % (self._name_)
-        members, uncovered = _decompose(cls, self._value_)
+        members, uncovered = decompose(cls, self._value_)
         if len(members) == 1 and members[0]._name_ is None:
             return "%r" % (members[0]._value_)
         else:
@@ -114,7 +114,7 @@ class ContentCategories(IntFlag):
         listvalues = []
         if self._name_ is not None:
             listvalues.append(self._name_)
-        members, uncovered = _decompose(ContentCategories, self._value_)
+        members, uncovered = decompose(ContentCategories, self._value_)
         if len(members) == 1 and members[0]._name_ is None:
             listvalues.append(members[0]._value_)
         else:
