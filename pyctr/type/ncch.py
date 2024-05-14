@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -9,20 +9,23 @@
 from hashlib import sha256
 from enum import IntEnum
 from math import ceil
-from os import PathLike
 from threading import Lock
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..common import PyCTRError, _ReaderOpenFileBase
 from ..crypto import CryptoEngine, Keyslot, add_seed, get_seed
 from ..fileio import SplitFileMerger, SubsectionIO
-from ..util import readle, roundup
+from ..util import readle
 from .base import TypeReaderCryptoBase
-from .exefs import ExeFSReader, EXEFS_HEADER_SIZE
+from .exefs import ExeFSReader
 from .romfs import RomFSReader
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Dict, List, Optional, Tuple, Union
+
+    from fs.base import FS
+
+    from ..common import FilePathOrObject
 
 __all__ = ['NCCH_MEDIA_UNIT', 'NO_ENCRYPTION', 'EXEFS_NORMAL_CRYPTO_FILES', 'FIXED_SYSTEM_KEY', 'NCCHError',
            'InvalidNCCHError', 'NCCHSeedError', 'MissingSeedError', 'extra_cryptoflags', 'NCCHSection', 'NCCHRegion',
@@ -125,18 +128,13 @@ class NCCHFlags(NamedTuple):
                    no_crypto=bool(flag_bytes[7] & 0x4), uses_seed=bool(flag_bytes[7] & 0x20))
 
 
+# noinspection PyAbstractClass
 class _NCCHSectionFile(_ReaderOpenFileBase):
     """
     Provides a raw, decrypted NCCH section as a file-like object.
 
-    This is only used in two cases:
-
-    - An ExeFS when an extra keyslot is used. Parts of the ExeFS are decrypted using Original NCCH (the header, icon,
-      and banner), while the rest uses the extra keyslot. This is done to retain compatibility with Nintendo 3DS
-      systems that don't support the extra keyslot. The .code would never be loaded on these old systems, since an
-      update prompt on the HOME Menu would prevent the title from starting.
-    - The simulated fully-decrypted NCCH. Since this loads from multiple sections with varying encryption, complex
-      handling is required. This is done in `get_data` of :class:`NCCHReader`.
+    This is used for the simulated fully-decrypted NCCH. Since this loads from multiple sections with varying
+    encryption, complex handling is required. This is done in `get_data` of :class:`NCCHReader`.
 
     In all other cases a :class:`crypto.CTRFileIO` object is used for encrypted sections, or
     :class:`fileio.SubsectionIO` for decrypted.
@@ -171,21 +169,25 @@ class NCCHReader(TypeReaderCryptoBase):
 
     :param file: A file path or a file-like object with the NCCH data.
     :param case_insensitive: Use case-insensitive paths for the RomFS.
-    :param crypto: A custom :class:`crypto.CryptoEngine` object to be used. Defaults to None, which causes a new one to
+    :param crypto: A custom :class:`~.CryptoEngine` object to be used. Defaults to None, which causes a new one to
         be created.
     :param dev: Use devunit keys.
     :param seed: Seed to use. This is a quick way to add a seed using :func:`~.seeddb.add_seed`.
-    :param load_sections: Load the ExeFS and RomFS as :class:`type.exefs.ExeFSReader` and
-        :class:`type.romfs.RomFSReader` objects.
+    :param load_sections: Load the ExeFS and RomFS as :class:`~.ExeFSReader` and
+        :class:`~.RomFSReader` objects.
     :param assume_decrypted: Assume each NCCH content is decrypted. Needed if the image was decrypted without fixing
         the NCCH flags.
     """
 
-    # this is the KeyY when generated using the seed
-    _seeded_key_y = None
+    __slots__ = (
+        '_all_sections', '_assume_decrypted', '_case_insensitive', '_exefs_crypto_ranges', '_exefs_fp',
+        '_exefs_special_handling', '_key_y', '_lock', '_seed_set_up', '_seed_verify', '_seeded_key_y', 'closed',
+        'content_size', 'exefs', 'extra_keyslot', 'flags', 'main_keyslot', 'partition_id', 'product_code', 'program_id',
+        'romfs', 'sections', 'version'
+    )
 
-    closed = False
-    """`True` if the reader is closed."""
+    # this is the KeyY when generated using the seed
+    _seeded_key_y: 'Optional[bytes]'
 
     sections: 'Dict[NCCHSection, NCCHRegion]'
     """Contains all the sections the NCCH has."""
@@ -198,10 +200,10 @@ class NCCHReader(TypeReaderCryptoBase):
     # the keyslot should alternate between main and extra for each entry, staring with main (for header)
     _exefs_crypto_ranges: 'List[Tuple[int, int, int]]'
 
-    exefs: 'Optional[ExeFSReader]' = None
+    exefs: 'Optional[ExeFSReader]'
     """The :class:`~.ExeFSReader` of the NCCH, if it has one."""
 
-    romfs: 'Optional[RomFSReader]' = None
+    romfs: 'Optional[RomFSReader]'
     """The :class:`~.RomFSReader` of the NCCH, if it has one."""
 
     program_id: str
@@ -239,11 +241,15 @@ class NCCHReader(TypeReaderCryptoBase):
     This is set to the same as main_keyslot for titles without an extra crypto method, or with a fixed crypto key.
     """
 
-    def __init__(self, file: 'Union[PathLike, str, bytes, BinaryIO]', *, closefd: bool = None,
+    def __init__(self, file: 'FilePathOrObject', *, fs: 'Optional[FS]' = None, closefd: bool = None,
                  case_insensitive: bool = True, crypto: CryptoEngine = None, dev: bool = False, seed: bytes = None,
                  load_sections: bool = True, assume_decrypted: bool = False):
 
-        super().__init__(file, closefd=closefd, crypto=crypto, dev=dev)
+        super().__init__(file, fs=fs, closefd=closefd, crypto=crypto, dev=dev)
+
+        self.closed = False
+        self.exefs = None
+        self.romfs = None
 
         # Threading lock to prevent two operations on one class instance from interfering with eachother.
         self._lock = Lock()
@@ -267,7 +273,7 @@ class NCCHReader(TypeReaderCryptoBase):
         # the int is used to generate the IV for each section
         partition_id_int = readle(header[0x108:0x110])
         self.partition_id = f'{partition_id_int:016x}'
-        # load the seed verify field, which is part of an sha256 hash to verify if
+        # load the seed verify field, which is part of a sha256 hash to verify if
         #   a seed is correct for this title
         self._seed_verify = header[0x114:0x118]
         # load the Product Code store it as a unicode string
@@ -341,7 +347,7 @@ class NCCHReader(TypeReaderCryptoBase):
 
         # this would fail if zero-key and a seed is used, but I have *no* idea how that would work
         # (if it's even possible)
-        if self.flags.fixed_crypto_key and self.flags.crypto_method == 0:
+        if self.flags.fixed_crypto_key:
             self._crypto.set_normal_key(Keyslot.NCCHExtraKey, self._crypto.key_normal[self.extra_keyslot])
         else:
             # load the (seeded, if needed) key into the extra keyslot
@@ -391,7 +397,7 @@ class NCCHReader(TypeReaderCryptoBase):
                 # header, "icon", "banner". This is how the 3DS treats it; any other file is encrypted with the extra
                 # keyslot. In practice this is only ".code", however if another file is forced in like "logo", it is
                 # encrypted with the extra keyslot. So because this has a chance of happening, no matter how unlikely,
-                # I gotta do this properly. Assumptions with Nintendo formats have bitten me in the ass before.
+                # I have to do this properly. Assumptions with Nintendo formats have bitten me in the ass before.
 
                 # Load the ExeFS to get the file offsets and sizes. It's re-created after once a new merged file is made
                 # with the decrypted sections.
@@ -497,6 +503,12 @@ class NCCHReader(TypeReaderCryptoBase):
             return self._seeded_key_y
 
     def check_for_extheader(self) -> bool:
+        """
+        Checks if the NCCH has an Extended Header.
+
+        :return: True if it has an ExtHeader.
+        :rtype: bool
+        """
         return NCCHSection.ExtendedHeader in self.sections
 
     def setup_seed(self, seed: bytes):

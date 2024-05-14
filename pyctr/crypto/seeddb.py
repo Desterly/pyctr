@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -14,6 +14,7 @@ from ..util import config_dirs, readle
 
 if TYPE_CHECKING:
     from typing import BinaryIO, Dict, Union
+    from ..common import FilePathOrObject
 
 __all__ = ['SeedDBError', 'InvalidProgramIDError', 'InvalidSeedError', 'MissingSeedError', 'load_seeddb', 'get_seed',
            'add_seed', 'get_all_seeds', 'save_seeddb']
@@ -40,6 +41,13 @@ class MissingSeedError(SeedDBError):
 _seeds: 'Dict[int, bytes]' = {}
 _loaded_from_default_paths = False
 
+seeddb_paths = [join(x, 'seeddb.bin') for x in config_dirs]
+try:
+    # try to insert the path in the SEEDDB_PATH environment variable
+    seeddb_paths.insert(0, environ['SEEDDB_PATH'])
+except KeyError:
+    pass
+
 
 def _load_seeds_from_file_object(fh: 'BinaryIO'):
     seed_count = readle(fh.read(4))
@@ -62,7 +70,7 @@ def _normalize_program_id(program_id: 'Union[int, str, bytes]') -> int:
     return program_id
 
 
-def load_seeddb(fp: 'Union[PathLike, str, bytes, BinaryIO]' = None):
+def load_seeddb(fp: 'FilePathOrObject' = None):
     """
     Load a seeddb file.
 
@@ -74,13 +82,6 @@ def load_seeddb(fp: 'Union[PathLike, str, bytes, BinaryIO]' = None):
             fp = open(fp, 'rb')
         _load_seeds_from_file_object(fp)
     elif not _loaded_from_default_paths:
-        seeddb_paths = [join(x, 'seeddb.bin') for x in config_dirs]
-        try:
-            # try to insert the path in the SEEDDB_PATH environment variable
-            seeddb_paths.insert(0, environ['SEEDDB_PATH'])
-        except KeyError:
-            pass
-
         for path in seeddb_paths:
             try:
                 with open(path, 'rb') as fh:
@@ -142,7 +143,7 @@ def get_all_seeds():
     return MappingProxyType(_seeds)
 
 
-def save_seeddb(fp: 'Union[PathLike, str, bytes, BinaryIO]'):
+def save_seeddb(fp: 'FilePathOrObject'):
     """
     Save the seed database to a seeddb file.
 

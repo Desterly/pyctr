@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -10,16 +10,21 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from weakref import WeakSet
 
+from fs import open_fs
+from fs.base import FS
+from fs.osfs import OSFS
+from fs.path import dirname as fs_dirname, join as fs_join, basename as fs_basename
+
 from ..common import PyCTRError
 from ..crypto import add_seed
 from .ncch import NCCHReader
 from .tmd import TitleMetadataReader
 
 if TYPE_CHECKING:
-    from os import PathLike
     from pathlib import PurePath
     from typing import BinaryIO, Dict, List, Set, Union
 
+    from ..common import FilePath
     from .ncch import NCCHReader
     from .sd import SDFilesystem
     from .tmd import ContentChunkRecord
@@ -47,25 +52,32 @@ class SDTitleReader:
     """
     Reads the contents of files installed on the SD card inside "Nintendo 3DS".
 
-    By default this only works with contents that do not use SD encryption (i.e. tmd and contents are plaintext). To
+    By default, this only works with contents that do not use SD encryption (i.e. tmd and contents are plaintext). To
     read contents currently encrypted on an SD card, :class:`~.SDFilesystem` is needed, and provides a method to easily
     open a title's contents. (NYI)
 
     Only NCCH contents are supported. SRL (DSiWare) contents are currently ignored.
 
     :param file: A path to a tmd file. All the contents should be in the same directory.
+    :param fs: An :meth:`FS` object or an `FS URL <https://docs.pyfilesystem.org/en/latest/openers.html>`.
     :param case_insensitive: Use case-insensitive paths for the RomFS of each NCCH container.
     :param dev: Use devunit keys.
     :param seed: Seed to use. This is a quick way to add a seed using :func:`~.seeddb.add_seed`.
     :param load_contents: Load each partition with :class:`~.NCCHReader`.
     :param sdfs: :class:`~.SDFilesystem` object to use, if opening contents that are currently encrypted. Usually this
-        should not be set directly, instead open the title through :class:`~.SDFilesystem`. (NYI)
+        should not be set directly, instead open the title through :class:`~.SDFilesystem`.
     :param sd_id1: ID1 to use if opened through :class:`~.SDFilesystem`.
     """
+
+    __slots__ = (
+        '_base_files', '_open_files', 'available_sections', 'closed', 'content_info', 'contents', 'sd_id1', 'sdfs',
+        'tmd', 'fs'
+    )
+
     available_sections: 'List[Union[SDTitleSection, int]]'
     """A list of sections available, including contents, ticket, and title metadata."""
 
-    closed = False
+    closed: bool
     """`True` if the reader is closed."""
 
     contents: 'Dict[int, NCCHReader]'
@@ -80,16 +92,15 @@ class SDTitleReader:
     tmd: TitleMetadataReader
     """The :class:`~.TitleMetadataReader` object with information from the TMD section."""
 
-    def __init__(self, file: 'Union[PathLike, str, bytes]', *, case_insensitive: bool = False, dev: bool = False,
+    def __init__(self, file: 'FilePath', *, fs: 'FS' = None, case_insensitive: bool = False, dev: bool = False,
                  seed: bytes = None, load_contents: bool = True, sdfs: 'SDFilesystem' = None, sd_id1: str = None):
+        self.closed = False
+
         self.sdfs = sdfs
         self.sd_id1 = sd_id1
 
-        if self.sdfs:
-            file = PurePosixPath(file)
-        else:
-            file = Path(fsdecode(file)).absolute()
-        title_root = file.parent
+        self.contents = {}
+        self.content_info = []
 
         # {section: filepath}
         self._base_files: Dict[Union[SDTitleSection, int], PurePath] = {}
@@ -101,11 +112,31 @@ class SDTitleReader:
         # public method to see what sections can be accessed
         self.available_sections = []
 
-        def add_file(section: 'Union[SDTitleSection, int]', path: "PurePath"):
+        if self.sdfs:
+            # custom FS is not supported here (this section is deprecated anyway)
+            file = PurePosixPath(file)
+            title_root = fsdecode(file.parent)
+            fs = OSFS(title_root)
+            file = file.name
+        else:
+            if fs:
+                if not isinstance(fs, FS):
+                    fs = open_fs(fs)
+                title_root = fs_dirname(file)
+                file = fs_basename(file)
+            else:
+                # the path being absolute makes Path.parent work reliably
+                file = Path(file).absolute()
+                fs = OSFS(fsdecode(file.parent))
+                title_root = '/'
+                file = file.name
+        self.fs = fs
+
+        def add_file(section: 'Union[SDTitleSection, int]', path: str):
             self._base_files[section] = path
             self.available_sections.append(section)
 
-        add_file(SDTitleSection.TitleMetadata, file)
+        add_file(SDTitleSection.TitleMetadata, fs_join(title_root, file))
 
         with self.open_raw_section(SDTitleSection.TitleMetadata) as tmd:
             self.tmd = TitleMetadataReader.load(tmd)
@@ -113,22 +144,19 @@ class SDTitleReader:
         if seed:
             add_seed(self.tmd.title_id, seed)
 
-        self.contents = {}
-        self.content_info = []
-
         for record in self.tmd.chunk_records:
             # check if the content is a Nintendo DS ROM (SRL)
             is_srl = record.cindex == 0 and self.tmd.title_id[3:5] == '48'
 
             # this should ideally never be uppercase in practice
             # since the console stores these as lowercase
-            content_file = title_root / (record.id + '.app')
+            content_file = fs_join(title_root, record.id + '.app')
             if self.sdfs:
                 if not self.sdfs.isfile(str(content_file), id1=self.sd_id1):
                     # can't find the file, so continue to the next record
                     continue
             else:
-                if not content_file.is_file():
+                if not fs.isfile(content_file):
                     continue
 
             self.content_info.append(record)
@@ -182,6 +210,6 @@ class SDTitleReader:
         if self.sdfs:
             f = self.sdfs.open(str(filepath), 'rb', id1=self.sd_id1)
         else:
-            f = open(filepath, 'rb')
+            f = self.fs.open(filepath, 'rb')
         self._open_files.add(f)
         return f

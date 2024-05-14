@@ -1,13 +1,12 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
 """Module for interacting with Executable Filesystem (ExeFS) files."""
 
 from hashlib import sha256
-from os import PathLike
 from threading import Lock
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -18,7 +17,11 @@ from .base import TypeReaderBase
 from .smdh import SMDH, InvalidSMDHError
 
 if TYPE_CHECKING:
-    from typing import BinaryIO, Dict, Union
+    from typing import Dict, Optional
+
+    from fs.base import FS
+
+    from ..common import FilePathOrObject
 
 __all__ = ['EXEFS_EMPTY_ENTRY', 'EXEFS_ENTRY_SIZE', 'EXEFS_ENTRY_COUNT', 'EXEFS_HEADER_SIZE', 'ExeFSError',
            'ExeFSFileNotFoundError', 'InvalidExeFSError', 'ExeFSNameError', 'BadOffsetError', 'CodeDecompressionError',
@@ -169,6 +172,7 @@ def _normalize_path(p: str):
     return p
 
 
+# noinspection PyAbstractClass
 class _ExeFSOpenFile(_ReaderOpenFileBase):
     """Class for open ExeFS file entries."""
 
@@ -181,32 +185,38 @@ class ExeFSReader(TypeReaderBase):
     """
     Reads the contents of the ExeFS, found inside NCCH containers.
 
-    The contents typically include .code, icon, and banner. For titles released before System Menu 5.0.0-11, logo can
-    also one of the contents, otherwise logo has a dedicated NCCH section.
+    The contents typically include ``.code``, ``icon``, and ``banner``. For titles released before System Menu 5.0.0-11,
+    ``logo`` can also one of the contents, otherwise logo has a dedicated NCCH section.
 
-    The other notable use of an ExeFS is GodMode9's essentials backup, which can include the files frndseed, hwcal0,
-    hwcal1, movable, nand_cid, nand_hdr, otp, and secinfo.
+    The other notable use of an ExeFS is GodMode9's essentials backup, which can include the files ``frndseed``,
+    ``hwcal0``, ``hwcal1``, ``movable``, ``nand_cid``, ``nand_hdr``, ``otp``, and ``secinfo``.
 
-    .code can sometimes be compressed which is indicated in the NCCH Extended Header. When decompressed, a new entry
-    called .code-decompressed is added.
+    ``.code`` can sometimes be compressed which is indicated in the NCCH Extended Header. When decompressed, a new entry
+    called ``.code-decompressed`` is added.
 
-    If icon is found, it is loaded into an :class:`~.SMDH` object.
+    If ``icon`` is found, it is loaded into an :class:`~.SMDH` object.
 
     :param fp: A file path or a file-like object with the CCI data.
     :param closefd: Close the underlying file object when closed. Defaults to `True` for file paths, and `False` for
         file-like objects.
     """
 
-    _code_dec = None
+    __slots__ = ('_code_dec', '_lock', 'entries', 'icon')
+
+    _code_dec: 'Optional[bytes]'
 
     entries: 'Dict[str, ExeFSEntry]'
     """Entries in the ExeFS."""
 
-    icon: 'SMDH' = None
+    icon: 'Optional[SMDH]'
     """The icon info, if one is in the ExeFS."""
 
-    def __init__(self, fp: 'Union[PathLike, str, bytes, BinaryIO]', *, closefd: bool = True, _load_icon: bool = True):
-        super().__init__(fp, closefd=closefd)
+    def __init__(self, fp: 'FilePathOrObject', *, fs: 'Optional[FS]' = None, closefd: bool = True,
+                 _load_icon: bool = True):
+        super().__init__(fp, fs=fs, closefd=closefd)
+
+        self.icon = None
+        self._code_dec = None
 
         # Threading lock to prevent two operations on one class instance from interfering with eachother.
         self._lock = Lock()
@@ -235,7 +245,7 @@ class ExeFSReader(TypeReaderBase):
                                size=readle(entry_raw[12:16]),
                                hash=entry_hash)
 
-            # the 3DS fails to parse an ExeFS with an offset that isn't a multiple of 0x200
+            # the 3DS fails to parse an ExeFS with an offset that isn't a multiple of 0x200,
             #   so we should do the same here
             if entry.offset % 0x200:
                 raise BadOffsetError(entry.offset)

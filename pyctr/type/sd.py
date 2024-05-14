@@ -1,15 +1,21 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
-"""Module for interacting with encrypted SD card contents under the "Nintendo 3DS" directory."""
+"""
+Module for interacting with encrypted SD card contents under the "Nintendo 3DS" directory.
+
+.. deprecated:: 0.8.0
+    Replaced with :mod:`~pyctr.type.sdfs`.
+"""
 
 from os import fsdecode
 from os.path import isfile, isdir
 from pathlib import Path
 from typing import TYPE_CHECKING
+from warnings import warn
 
 from ..common import PyCTRError
 from ..crypto import CryptoEngine, KeyslotMissingError, Keyslot
@@ -18,9 +24,14 @@ from .sdtitle import SDTitleReader
 if TYPE_CHECKING:
     from os import PathLike
     from typing import BinaryIO, List, Union
+    from ..common import FilePath
 
     # noinspection PyProtectedMember
     from ..crypto import CTRFileIO
+
+
+warn('pyctr.type.sd is deprecated, use pyctr.type.sdfs instead',
+     DeprecationWarning)
 
 
 class SDFilesystemError(PyCTRError):
@@ -61,8 +72,10 @@ class SDFilesystem:
         in id1s.
     """
 
-    def __init__(self, path: 'Union[PathLike, str, bytes]', *, crypto: CryptoEngine = None, dev: bool = False,
-                 sd_key_file: 'Union[PathLike, str, bytes]' = None, sd_key: bytes = None):
+    __slots__ = ('_base_path', '_crypto', '_id0_path', 'current_id1', 'id1s')
+
+    def __init__(self, path: 'FilePath', *, crypto: CryptoEngine = None, dev: bool = False,
+                 sd_key_file: 'FilePath' = None, sd_key: bytes = None):
         if crypto:
             self._crypto = crypto
         else:
@@ -198,6 +211,8 @@ class SDFilesystem:
         title_id = title_id.lower()
         sd_path = f'/title/{title_id[0:8]}/{title_id[8:16]}/content'
 
+        # not sure why PyCharm thinks this variable is unused?
+        # noinspection PyUnusedLocal
         tmd_path = None
         for f in self.listdir(sd_path):
             if f.endswith('.tmd'):

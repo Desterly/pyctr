@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -13,9 +13,9 @@ from ..base import TypeReaderCryptoBase
 from .partition import Partition, load_partdesc
 
 if TYPE_CHECKING:
-    from os import PathLike
-    from typing import BinaryIO, Dict, Literal, Optional, Union
+    from typing import Dict, Literal, Optional
 
+    from ...common import FilePath, FilePathOrObject
     from ...crypto import CryptoEngine
     from .cmac import CMACTypeBase
 
@@ -58,11 +58,11 @@ class PartitionContainerBase(TypeReaderCryptoBase):
     _header: bytes
     """Raw header for CMAC generation."""
 
-    def __init__(self, file: 'Union[PathLike, str, bytes, BinaryIO]', mode: 'ReadWriteBinaryFileModes' = 'rb', *,
-                 closefd: 'Optional[bool]' = None, crypto: 'CryptoEngine' = None, dev: bool = False,
-                 cmac_base: 'CMACTypeBase' = None, sd_key_file: 'Union[PathLike, str, bytes]' = None,
+    def __init__(self, file: 'FilePathOrObject', mode: 'ReadWriteBinaryFileModes' = 'rb', *,
+                 fs: 'Optional[FS]' = None, closefd: 'Optional[bool]' = None, crypto: 'CryptoEngine' = None,
+                 dev: bool = False, cmac_base: 'CMACTypeBase' = None, sd_key_file: 'FilePath' = None,
                  sd_key: bytes = None):
-        super().__init__(file, closefd=closefd, mode=mode, crypto=crypto, dev=dev)
+        super().__init__(file, fs=fs, closefd=closefd, mode=mode, crypto=crypto, dev=dev)
 
         self.cmac = self._file.read(0x10)
 

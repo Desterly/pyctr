@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -11,12 +11,14 @@ from ...util import readle
 from .common import PartitionContainerBase, CorruptPartitionError, InvalidPartitionContainerError
 
 if TYPE_CHECKING:
-    from os import PathLike
-    from typing import BinaryIO, Dict, Optional, Union
+    from typing import Dict, Optional
+
+    from fs.base import FS
 
     from ...crypto import CryptoEngine
     from .cmac import CMACTypeBase
     from .common import ReadWriteBinaryFileModes, Partition
+    from ...common import FilePath, FilePathOrObject
 
 
 class DIFF(PartitionContainerBase):
@@ -38,11 +40,11 @@ class DIFF(PartitionContainerBase):
     partitions: 'Dict[int, Partition]'
     """Partitions of the file. DIFF only has one, so there would only be a single `0` key."""
 
-    def __init__(self, file: 'Union[PathLike, str, bytes, BinaryIO]', mode: 'ReadWriteBinaryFileModes' = 'rb', *,
-                 closefd: 'Optional[bool]' = None, crypto: 'CryptoEngine' = None, dev: bool = False,
-                 cmac_base: 'CMACTypeBase' = None, sd_key_file: 'Union[PathLike, str, bytes]' = None,
+    def __init__(self, file: 'FilePathOrObject', mode: 'ReadWriteBinaryFileModes' = 'rb', *,
+                 fs: 'Optional[FS]' = None, closefd: 'Optional[bool]' = None, crypto: 'CryptoEngine' = None,
+                 dev: bool = False, cmac_base: 'CMACTypeBase' = None, sd_key_file: 'FilePath' = None,
                  sd_key: bytes = None):
-        super().__init__(file, closefd=closefd, crypto=crypto, dev=dev, mode=mode, cmac_base=cmac_base,
+        super().__init__(file, fs=fs, closefd=closefd, crypto=crypto, dev=dev, mode=mode, cmac_base=cmac_base,
                          sd_key_file=sd_key_file, sd_key=sd_key)
 
         self._file.seek(0xF0, 1)

@@ -1,13 +1,12 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
 """Module for interacting with CTR Importable Archive (CIA) files."""
 
 from enum import IntEnum
-from io import BytesIO
 from threading import Lock
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -21,8 +20,11 @@ from .srl import SRLReader
 from .tmd import TitleMetadataReader
 
 if TYPE_CHECKING:
-    from os import PathLike
-    from typing import BinaryIO, Dict, List, Optional, Union
+    from typing import Dict, List, Optional, Union
+
+    from fs.base import FS
+
+    from ..common import FilePathOrObject
     from .tmd import ContentChunkRecord
 
 ALIGN_SIZE = 64
@@ -76,7 +78,7 @@ class CIARegion(NamedTuple):
 class CIAReader(TypeReaderCryptoBase):
     """
     Reads the contents of CIA files. The sources of these are usually dumps from digital titles from Nintendo eShop or
-    the update CDN, gamecard update partitions, or Download Play children.
+    the update CDN, Game Card update partitions, or Download Play children.
 
     Only NCCH contents are supported. SRL (DSiWare) contents are currently ignored.
 
@@ -85,7 +87,7 @@ class CIAReader(TypeReaderCryptoBase):
     - a 0x20-byte header with sizes for all the following sections
     - an archive header where each bit is an enabled content
     - a Certificate chain to verify the signatures in all the following sections
-    - a Ticket with a titlekey to decrypt the contents
+    - a Ticket with a Title Key to decrypt the contents
     - a Title Metadata (TMD) that contains information about all the possible contents
     - the contents themselves
     - an optional Meta region
@@ -111,6 +113,8 @@ class CIAReader(TypeReaderCryptoBase):
     :param load_contents: Load each partition with :class:`~.NCCHReader`.
     """
 
+    __slots__ = ('_case_insensitive', '_lock', 'content_info', 'contents', 'sections', 'tmd', 'total_size')
+
     contents: 'Dict[int, NCCHReader]'
     """A `dict` of :class:`~.NCCHReader` objects for each active NCCH content."""
 
@@ -126,16 +130,24 @@ class CIAReader(TypeReaderCryptoBase):
     total_size: int
     """Expected size of the CIA file in bytes."""
 
-    def __init__(self, file: 'Union[PathLike, str, bytes, BinaryIO]', *, closefd: bool = None,
+    def __init__(self, file: 'FilePathOrObject', *, fs: 'Optional[FS]' = None, closefd: bool = None,
                  case_insensitive: bool = True, crypto: CryptoEngine = None, dev: bool = False, seed: bytes = False,
                  load_contents: bool = True):
-        super().__init__(file, closefd=closefd, crypto=crypto, dev=dev)
+        super().__init__(file, fs=fs, closefd=closefd, crypto=crypto, dev=dev)
 
         # Threading lock to prevent two operations on one class instance from interfering with eachother.
         self._lock = Lock()
 
         # store case-insensitivity for RomFSReader
         self._case_insensitive = case_insensitive
+
+        # this contains the location of each section, as well as the IV of encrypted ones
+        self.sections = {}
+
+        self.contents = {}
+
+        active_contents_tmd = set()
+        self.content_info = []
 
         header = self._file.read(0x20)
 
@@ -179,9 +191,6 @@ class CIAReader(TypeReaderCryptoBase):
         # lazy method to get the total size
         self.total_size = meta_offset + meta_size
 
-        # this contains the location of each section, as well as the IV of encrypted ones
-        self.sections = {}
-
         def add_region(section: 'Union[int, CIASection]', offset: int, size: int, iv: 'Optional[bytes]'):
             region = CIARegion(section=section, offset=offset, size=size, iv=iv)
             self.sections[section] = region
@@ -195,20 +204,15 @@ class CIAReader(TypeReaderCryptoBase):
             add_region(CIASection.Meta, meta_offset, meta_size, None)
 
         # this will load the titlekey to decrypt the contents
-        self._file.seek(self._start + ticket_offset)
-        ticket = self._file.read(ticket_size)
-        self._crypto.load_from_ticket(ticket)
+        with self.open_raw_section(CIASection.Ticket) as ticket:
+            self._crypto.load_from_ticket(ticket.read())
 
         # the tmd describes the contents: ID, index, size, and hash
-        self._file.seek(self._start + tmd_offset)
-        tmd_data = self._file.read(tmd_size)
-        self.tmd = TitleMetadataReader.load(BytesIO(tmd_data))
+        with self.open_raw_section(CIASection.TitleMetadata) as tmd:
+            self.tmd = TitleMetadataReader.load(tmd)
 
         if seed:
             add_seed(self.tmd.title_id, seed)
-
-        active_contents_tmd = set()
-        self.content_info = []
 
         # this does a first check to make sure there are no missing contents that are marked active in content_index
         for record in self.tmd.chunk_records:
@@ -220,8 +224,6 @@ class CIAReader(TypeReaderCryptoBase):
         #   that are not in the tmd, which is bad
         if active_contents ^ active_contents_tmd:
             raise InvalidCIAError('Missing active contents in the TMD')
-
-        self.contents = {}
 
         # this goes through the contents and figures out their regions, then creates an NCCHReader
         curr_offset = content_offset
@@ -236,7 +238,7 @@ class CIAReader(TypeReaderCryptoBase):
                 is_srl = record.cindex == 0 and self.tmd.title_id[3:5] == '48'
                 if not is_srl:
                     self.contents[record.cindex] = NCCHReader(content_fp, case_insensitive=case_insensitive,
-                                                              dev=dev)
+                                                              dev=dev, crypto=self._crypto.clone())
                 else:
                     self.contents[record.cindex] = SRLReader(content_fp) 
 

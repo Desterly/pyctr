@@ -1,21 +1,60 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
 from functools import wraps
 from io import RawIOBase
+from os import PathLike, fsdecode
+from os.path import dirname as os_dirname
 from typing import TYPE_CHECKING
+
+from fs import open_fs
+from fs.base import FS
+from fs.path import dirname as fs_dirname
 
 if TYPE_CHECKING:
     # this is a lazy way to make type checkers stop complaining
-    from typing import BinaryIO, IO
+    from typing import BinaryIO, IO, Union, Optional, Tuple
+
     RawIOBase = BinaryIO
+
+    FilePath = Union[PathLike, str, bytes]
+    FilePathOrObject = Union[FilePath, BinaryIO]
+    DirPathOrFS = Union[PathLike, str, bytes, FS]
 
 
 class PyCTRError(Exception):
     """Common base class for all PyCTR errors."""
+
+
+def get_fs_file_object(
+        path: 'FilePathOrObject',
+        fs: 'Optional[FS]' = None,
+        *,
+        mode: str = 'rb'
+    ) -> 'Tuple[IO, bool]':
+    if isinstance(path, (PathLike, str, bytes)):
+        """
+        Opens a file on the given filesystem. This can be given a simple OS path, a path and a filesystem, or an
+        olready opened file object.
+        
+        :param path: A path to a file.
+        :param fs: A filesystem or an FS URL.
+        :return: A file-like object and True if the file is newly opened.
+        """
+        if fs:
+            # fs can be an FS object or an FS URL
+            if not isinstance(fs, FS):
+                fs = open_fs(fs)
+            return fs.open(path, mode), True
+        else:
+            # no fs means assuming OS, and no real need to bother going through OSFS for this one
+            return open(path, mode), True
+    else:
+        # it's already an opened file object, so just return that
+        return path, False
 
 
 def _raise_if_file_closed(method):
@@ -49,6 +88,15 @@ def _raise_if_file_closed_generic(method):
             raise ValueError('I/O operation on closed file')
         return method(self, *args, **kwargs)
     return decorator
+
+
+if TYPE_CHECKING:
+    # get pycharm to stop complaining
+    def _raise_if_file_closed(method):
+        return method
+
+    def _raise_if_file_closed_generic(method):
+        return method
 
 
 class _ReaderOpenFileBase(RawIOBase):

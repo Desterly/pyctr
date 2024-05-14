@@ -1,22 +1,30 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
-from cgitb import small
 from struct import pack
 from types import MappingProxyType
-from typing import List, TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
-from PIL import Image
+try:
+    from PIL import Image
+    from itertools import chain
+except ModuleNotFoundError:
+    # Pillow not installed
+    Image = None
 
-from ..common import PyCTRError
-from ..util import readle
+from ..common import PyCTRError, get_fs_file_object
 
 if TYPE_CHECKING:
-    from os import PathLike
-    from typing import BinaryIO, Dict, Mapping, Optional, Tuple, Union
+    from typing import BinaryIO, Dict, List, Mapping, Optional, Tuple, Union
+
+    from fs.base import FS
+
+    from ..common import FilePath
+
+    RGBTuple = Tuple[int, int, int]
 
 SMDH_SIZE = 0x36C0
 
@@ -51,18 +59,6 @@ _region_order_check = (
     'Traditional Chinese',
 )
 
-# Region Lockout names
-_region_lock_names = (
-    'JPN',
-    'USA',
-    'EUR',
-    'EUR',
-    'CHN',
-    'KOR',
-    'TWN',
-    'FREE'
-)
-
 
 class SMDHError(PyCTRError):
     """Generic exception for SMDH operations."""
@@ -77,16 +73,52 @@ class AppTitle(NamedTuple):
     long_desc: str
     publisher: str
 
+    @classmethod
+    def from_bytes(cls, app_title_raw: bytes):
+        return cls(short_desc=app_title_raw[0:0x80].decode('utf-16le').strip('\0'),
+                   long_desc=app_title_raw[0x80:0x180].decode('utf-16le').strip('\0'),
+                   publisher=app_title_raw[0x180:0x200].decode('utf-16le').strip('\0'))
+
+    def __bytes__(self):
+        return b''.join((
+            self.short_desc.encode('utf-16le').ljust(0x80, b'\0'),
+            self.long_desc.encode('utf-16le').ljust(0x100, b'\0'),
+            self.publisher.encode('utf-16le').ljust(0x80, b'\0'),
+        ))
+
+
+class SMDHRegionLockout(NamedTuple):
+    Japan: bool
+    NorthAmerica: bool
+    Europe: bool
+    Australia: bool
+    China: bool
+    Korea: bool
+    Taiwan: bool
+    RegionFree: bool
+
+    @classmethod
+    def from_bytes(cls, region_lockout_bytes: bytes):
+        region_lockouts = int.from_bytes(region_lockout_bytes, 'little')
+        return cls(Japan=bool(region_lockouts & 0x1),
+                   NorthAmerica=bool(region_lockouts & 0x2),
+                   Europe=bool(region_lockouts & 0x4),
+                   Australia=bool(region_lockouts & 0x8),
+                   China=bool(region_lockouts & 0x10),
+                   Korea=bool(region_lockouts & 0x20),
+                   Taiwan=bool(region_lockouts & 0x40),
+                   RegionFree=(region_lockouts == 0x7FFFFFFF))
+
 
 class SMDHFlags(NamedTuple):
     Visible: bool
     """Icon is visible at the HOME Menu"""
 
     AutoBoot: bool
-    """Auto-boot this game card title"""
+    """Auto-boot this game card title (no effect for SD titles)"""
 
     Allow3D: bool
-    """Title uses 3D (this is only for parental controls, it does not actually disable 3D if this flag is not set)"""
+    """Title uses 3D (this is only used for a Parental Controls alert, it does not actually enable/disable 3D)"""
 
     RequireEULA: bool
     """Require accepting the EULA before being launched from the HOME Menu"""
@@ -142,31 +174,48 @@ def next_pow_2(i: int):
     return i
 
 
-def rgb565_to_rgb888(data: bytes):
+def rgb565_to_rgb888_tuple(data: bytes) -> 'RGBTuple':
     n = int.from_bytes(data, 'little')
     r = (((n >> 11) & 0x1F) * 0xFF // 0x1F) & 0xFF
     g = (((n >> 5) & 0x3F) * 0xFF // 0x3F) & 0xFF
     b = ((n & 0x1F) * 0xFF // 0x1F) & 0xFF
-    return pack('>BBB', r, g, b)
+    return r, g, b
+
+
+def rgb565_to_rgb888(data: bytes):
+    return pack('>BBB', *rgb565_to_rgb888_tuple(data))
 
 
 # Based on:
 # https://github.com/Steveice10/FBI/blob/c6d92d86b27aaef784d1ecb4103e1346fb0f8a12/source/core/screen.c#L305-L323
-def load_tiled_rgb565(data: bytes, width: int, height: int):
+def load_tiled_rgb565_to_array(data: bytes, width: int, height: int) -> 'List[List[RGBTuple]]':
     pixel_size = len(data) // width // height
 
     pixels = []
 
-    for x in range(width):
-        for y in range(height):
+    for y in range(height):
+        line = []
+        pixels.append(line)
+        for x in range(width):
             pixel_offset = ((((y >> 3) * (width >> 3) + (x >> 3)) << 6) + ((x & 1) | ((y & 1) << 1) | ((x & 2) << 1) | ((y & 2) << 2) | ((x & 4) << 2) | ((y & 4) << 3))) * pixel_size
 
-            pixel = rgb565_to_rgb888(data[pixel_offset:pixel_offset + pixel_size])
+            pixel = rgb565_to_rgb888_tuple(data[pixel_offset:pixel_offset + pixel_size])
 
-            pixels.append(pixel)
+            line.append(pixel)
 
-    img = Image.frombytes('RGB', (width, height), b''.join(pixels))
-    return img.transpose(Image.FLIP_LEFT_RIGHT).transpose(Image.ROTATE_90)
+    return pixels
+
+
+# if Pillow is installed
+if Image:
+    def rgb888_array_to_image(pixel_array: 'List[List[RGBTuple]]', width: int, height: int):
+        final_data = bytes(chain.from_iterable(chain.from_iterable(pixel_array)))
+        img = Image.frombytes('RGB', (width, height), final_data)
+        return img
+
+    def load_tiled_rgb565(data: bytes, width: int, height: int):
+        pixel_array = load_tiled_rgb565_to_array(data, width, height)
+        return rgb888_array_to_image(pixel_array, width, height)
 
 
 class SMDH:
@@ -176,14 +225,24 @@ class SMDH:
     https://www.3dbrew.org/wiki/SMDH
     """
 
+    __slots__ = ('flags', 'icon_large', 'icon_large_array', 'icon_small', 'icon_small_array', 'names', 'region_lockout')
+
     # TODO: support other settings
 
-    def __init__(self, names: 'Dict[str, AppTitle]', regions_allowed: 'List[str]', icon_small: 'Image', icon_large: 'Image', flags: SMDHFlags):
+    def __init__(self, names: 'Dict[str, AppTitle]', icon_small_array: 'List[List[RGBTuple]]',
+                 icon_large_array: 'List[List[RGBTuple]]', flags: SMDHFlags, region_lockout: SMDHRegionLockout):
         self.names: Mapping[str, AppTitle] = MappingProxyType({n: names.get(n, None) for n in region_names})
-        self.regions_allowed: List[str] = regions_allowed
-        self.small_icon = icon_small
-        self.large_icon = icon_large
+        self.icon_large_array = icon_large_array
         self.flags = flags
+        self.region_lockout = region_lockout
+
+        # if Pillow is installed
+        if Image:
+            self.icon_small = rgb888_array_to_image(self.icon_small_array, 24, 24)
+            self.icon_large = rgb888_array_to_image(self.icon_large_array, 48, 48)
+        else:
+            self.icon_small = None
+            self.icon_large = None
 
     def __repr__(self):
         return f'<{type(self).__name__} title: {self.get_app_title().short_desc}>'
@@ -213,34 +272,24 @@ class SMDH:
         names: Dict[str, AppTitle] = {}
         # due to region_names only being 12 elements, this will only process 12. the other 4 are unused.
         for app_title, region in zip((app_structs[x:x + 0x200] for x in range(0, 0x2000, 0x200)), region_names):
-            names[region] = AppTitle(app_title[0:0x80].decode('utf-16le').strip('\0'),
-                                     app_title[0x80:0x180].decode('utf-16le').strip('\0'),
-                                     app_title[0x180:0x200].decode('utf-16le').strip('\0'))
-
-        regions_allowed = []
-        region_lockout = readle(smdh[0x2018:0x2018+4])
-        if region_lockout == 0x7FFFFFFF:
-            regions_allowed = ["Region Free"]
-        else:
-            for i in range(7):
-                bit = region_lockout & (1 << i)
-                if bit != 0:
-                    regions_allowed.append(_region_lock_names[i])
-            regions_allowed = set(regions_allowed)
+            names[region] = AppTitle.from_bytes(app_title)
 
         icon_raw_small = smdh[0x2040:0x24C0]
         icon_raw_large = smdh[0x24C0:0x36C0]
         # This is assuming icon data is RGB565, but 3dbrew says other formats are possible. Though every known example
         # uses RGB565 and there doesn't seem to be a way to tell which one is being used.
-        icon_small = load_tiled_rgb565(icon_raw_small, 24, 24)
-        icon_large = load_tiled_rgb565(icon_raw_large, 48, 48)
+        icon_small_array = load_tiled_rgb565_to_array(icon_raw_small, 24, 24)
+        icon_large_array = load_tiled_rgb565_to_array(icon_raw_large, 48, 48)
 
         flags_raw = smdh[0x2028:0x202C]
         flags = SMDHFlags.from_bytes(flags_raw)
-        return cls(names, regions_allowed, icon_small, icon_large, flags)
 
+        region_lockout_raw = smdh[0x2018:0x201C]
+        region_lockout = SMDHRegionLockout.from_bytes(region_lockout_raw)
+
+        return cls(names, icon_small_array, icon_large_array, flags, region_lockout)
 
     @classmethod
-    def from_file(cls, fn: 'Union[PathLike, str, bytes]') -> 'SMDH':
-        with open(fn, 'rb') as f:
+    def from_file(cls, fn: 'FilePath', *, fs: 'Optional[FS]' = None) -> 'SMDH':
+        with get_fs_file_object(fn, fs)[0] as f:
             return cls.load(f)

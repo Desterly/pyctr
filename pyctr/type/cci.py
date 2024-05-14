@@ -1,13 +1,12 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
 """Module for interacting with CTR Cart Image (CCI) files."""
 
-from enum import IntEnum
-from os import PathLike
+from enum import Enum, IntEnum, auto
 from typing import TYPE_CHECKING, NamedTuple
 
 from ..common import PyCTRError
@@ -17,7 +16,8 @@ from ..util import readle
 from .base import TypeReaderBase
 
 if TYPE_CHECKING:
-    from typing import BinaryIO, Dict, Union
+    from typing import Dict
+    from ..common import FilePathOrObject
 
 CCI_MEDIA_UNIT = 0x200
 
@@ -75,6 +75,16 @@ class CCIRegion(NamedTuple):
     size: int
 
 
+class CCICartRegion(Enum):
+    USA = 'USA'
+    EUR = 'EUR'
+    JPN = 'JPN'
+    CHN = 'CHN'
+    KOR = 'KOR'
+    TWN = 'TWN'
+    Unknown = 'Unknown'
+
+
 class CCIReader(TypeReaderBase):
     """
     Reads the contents of CCI files, usually dumps from Nintendo 3DS game cards.
@@ -93,8 +103,10 @@ class CCIReader(TypeReaderBase):
         the NCCH flags.
     """
 
-    closed = False
-    """`True` if the reader is closed."""
+    __slots__ = ('_case_insensitive', 'cart_region', 'contents', 'image_size', 'media_id', 'sections')
+
+    cart_region: CCICartRegion
+    """Region that the game card is for. This is detected by checking the files in the Update RomFS."""
 
     image_size: int
     """Image size in bytes. This does not always match the file size on disk."""
@@ -108,13 +120,19 @@ class CCIReader(TypeReaderBase):
     media_id: str
     """Same as the Title ID of the application."""
 
-    def __init__(self, file: 'Union[PathLike, str, bytes, BinaryIO]', *, closefd: bool = None,
+    def __init__(self, file: 'FilePathOrObject', *, fs: 'Optional[FS]' = None, closefd: bool = None,
                  case_insensitive: bool = True, dev: bool = False, load_contents: bool = True,
                  assume_decrypted: bool = False):
-        super().__init__(file, closefd=closefd)
+        super().__init__(file, fs=fs, closefd=closefd)
 
         # store case-insensitivity for RomFSReader
         self._case_insensitive = case_insensitive
+
+        # this contains the location of each section
+        self.sections = {}
+
+        # this contains loaded sections
+        self.contents = {}
 
         # ignore the signature, we don't need it
         self._file.seek(0x100, 1)
@@ -128,12 +146,6 @@ class CCIReader(TypeReaderBase):
             raise InvalidCCIError('Not a CCI, this is a NAND')
 
         self.image_size = readle(header[4:8]) * CCI_MEDIA_UNIT
-
-        # this contains the location of each section
-        self.sections = {}
-
-        # this contains loaded sections
-        self.contents = {}
 
         def add_region(section: 'CCISection', offset: int, size: int):
             region = CCIRegion(section=section, offset=offset, size=size)
@@ -162,6 +174,25 @@ class CCIReader(TypeReaderBase):
                     content_fp = self.open_raw_section(section_id)
                     self.contents[section_id] = NCCHReader(content_fp, case_insensitive=case_insensitive, dev=dev,
                                                            assume_decrypted=assume_decrypted)
+
+        self.cart_region = CCICartRegion.Unknown
+        try:
+            update_romfs = self.contents[CCISection.UpdateOld3DS].romfs
+            version_cias = {  # CVer
+                '000400db00017102.cia': CCICartRegion.EUR,
+                '000400db00017202.cia': CCICartRegion.JPN,
+                '000400db00017302.cia': CCICartRegion.USA,
+                '000400db00017402.cia': CCICartRegion.CHN,
+                '000400db00017502.cia': CCICartRegion.KOR,
+                '000400db00017602.cia': CCICartRegion.TWN,
+            }
+            update_contents = update_romfs.get_info_from_path('/').contents
+            for cia_name, region in version_cias.items():
+                if cia_name in update_contents:
+                    self.cart_region = region
+                    break
+        except KeyError:
+            pass
 
     def __repr__(self):
         info = [('media_id', self.media_id)]

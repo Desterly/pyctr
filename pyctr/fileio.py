@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -22,12 +22,20 @@ _lock_objects = WeakValueDictionary()
 
 
 class SubsectionIO(RawIOBase):
-    """Provides read-write access to a subsection of a file."""
+    """
+    Provides read-write access to a subsection of a file.
 
-    closed = False
-    _seek = 0
+    :param file: A file-like object.
+    :param offset: Offset of the section.
+    :param size: Size of the section.
+    """
+
+    __slots__ = ('_end', '_lock', '_offset', '_reader', '_seek', '_size', 'closed')
 
     def __init__(self, file: 'BinaryIO', offset: int, size: int):
+        self.closed = False
+        self._seek = 0
+
         # get existing Lock object for file, or create a new one
         file_id = id(file)
         try:
@@ -69,8 +77,8 @@ class SubsectionIO(RawIOBase):
         with self._lock:
             self._reader.seek(self._seek + self._offset)
             data = self._reader.read(size)
-
         self._seek += len(data)
+
         return data
 
     @_raise_if_file_closed
@@ -118,6 +126,11 @@ class SubsectionIO(RawIOBase):
     def seekable(self) -> bool:
         return self._reader.seekable()
 
+    @_raise_if_file_closed
+    def flush(self) -> None:
+        with self._lock:
+            self._reader.flush()
+
 
 class SplitFileMerger(RawIOBase):
     """
@@ -128,16 +141,18 @@ class SplitFileMerger(RawIOBase):
     :param read_only: If writing should be disabled.
     """
 
-    closed = False
-
-    # The seek over the current file, returned by tell().
-    _fake_seek = 0
-    # Current file index and seek on it.
-    _seek_info = (0, 0)
+    __slots__ = ('_closefds', '_fake_seek', '_files', '_read_only', '_seek_info', '_total_size', 'closed')
 
     def __init__(self, files: 'Iterable[Tuple[BinaryIO, int]]', read_only: bool = True, closefds: bool = False):
         if not read_only:
             raise NotImplementedError('writing is not yet supported')
+
+        self.closed = False
+
+        # The seek over the current file, returned by tell().
+        self._fake_seek = 0
+        # Current file index and seek on it.
+        self._seek_info = (0, 0)
 
         self._read_only = read_only
         self._closefds = closefds

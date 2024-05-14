@@ -1,3 +1,141 @@
+## Next
+### Highlights
+A command line tool was added, `pyctr.cmd` with entrypoint `pyctrcmd`.
+
+[PyFilesystem2](https://www.pyfilesystem.org/) (fs) is now a dependency.
+* `RomFSReader` is now based on `fs.base.FS`
+* `pyctr.type.sdfs` is a replacement for `pyctr.type.sd` that uses `fs.base.FS`
+* `NAND` now contains 3 new methods: `open_ctr_fat`, `open_twl_fat`, and `open_bonus_fat`
+* Most types that accept a file path or file-like object now accept an `fs=` argument, which can be an FS URL or a filesystem. For example:
+  * `CIAReader('mygame.cia', fs='zip://path/to/mygame.zip')`
+  * `CDNReader('tmd', fs=fs.zipfs.ZipFS('mycdngame.zip'))`
+* Fix setting TWLNAND key for dev consoles (thanks to @xprism1 for assistance)
+
+### Deprecation warnings
+* `RomFSReader` was updated to use PyFilesystem2.
+  * To match PyFilesystem2, the function signature for `open` has changed to add `mode` and `buffering` arguments between `path` and `encoding`. This also means opening files is done in text mode by default. For compatibility, if the second argument is detected to be an encoding, the file will be opened like before, and a `DeprecationWarning` will be raised.
+  * `get_info_from_path` is deprecated and should be replaced with `getinfo`, `listdir`, or `scandir`.
+* `pyctr.type.sdfs` was created to replace `pyctr.type.sd`, which is now deprecated.
+  * `sdfs` uses PyFilesystem2. The one deviation from the standard is that `SDFS.open` will only open files in binary mode.
+
+### Changelog
+* Add initial pyctr command line tool, `pyctr.cmd` (entry point `pyctrcmd`) with one command, `checkenv`
+* Move `seeddb_paths` to `pyctr.crypto.seeddb` from a function, making it publicly accessible (and then use it in `pyctr.cmd.checkenv`)
+* `pyctr.crypto.engine` now includes a new function, `setup_boot9_keys`, which loads the keyblobs from boot9 instead of doing that within `CryptoEngine`
+  * `CryptoEngine` now generates the keys from the global key blobs on initialization
+  * This should also fix issues with separate retail and dev versions of `CryptoEngine` being used (some keys stored globally only stored one type of key)
+  * `CryptoEngine.setup_keys_from_boot9` and `CryptoEngine.setup_keys_from_boot9_file` will now output a deprecation warning
+* `CryptoEngine.setup_keys_from_otp` will now only update normal keys and set `otp_dec` and `otp_enc` at the end
+* Add `CryptoEngine.clone` method to create a copy of the `CryptoEngine` state
+* `CDNReader` and `CIAReader` will now clone their `CryptoEngine` state for each `NCCHReader`
+* Use `fs.base.FS` for `RomFSReader`
+  * fs (PyFilesystem2) is now a dependency
+  * Tests have been updated to use the new FS methods
+* Create `pyctr.type.sdfs` as a replacement for `pyctr.type.sd`
+* Implement `open_ctr_fat`, `open_twl_fat`, and `open_bonus_fat` in `NAND`
+  * pyfatfs is now a dependency
+* Implement loading from SD in remaining types
+* Add new example for getting version from a NAND backup
+* `NANDNCSDHeader` can be converted back to bytes with `bytes(my_nand_header)`
+* Include NAND sighax signatures as the `SIGHAX_SIGS` constant
+* Always set fixed keys regardless of boot9 (in particular: TWLNAND Y, CTRNANDNew Y, ZeroKey N, FixedSystemKey N)
+
+## v0.7.0 - September 3, 2023
+### Highlights
+Python 3.8 or later is now required, up from 3.6.1.
+
+A new `pyctr.type.config` package with `save` and `blocks` modules was added. These allow for reading the [config savegame](https://www.3dbrew.org/wiki/Config_Savegame), both to read the raw blocks, and to parse the data into a usable format.
+
+A new `nand` module with the `NAND` class is added to read and write to NAND images. This only provides raw access (for FAT32, try [nathanhi/pyfatfs](https://github.com/nathanhi/pyfatfs)).
+
+`RomFSReader` initialization performance was improved, especially with RomFS files containing large amounts of files or directories.
+
+Documentation is being added and improved over time. Check it on [Read the Docs](https://pyctr.readthedocs.io/en/latest/).
+
+### Changelog
+* Add the module `pyctr.type.configsave` with the class `ConfigSaveReader` (_module name changed in a future commit_)
+* Implement `to_bytes` and `remove_block` in `ConfigSaveReader`
+* Split `pyctr.type.configsave` into two packages: `pyctr.type.config.blocks` and `pyctr.type.config.save`
+  * New `ConfigSaveBlockParser` class with 3 methods: `get_username`, `get_user_time_offset`, and `get_system_model` (plus convenience functions `load` and `from_file` so a `ConfigSaveParser` doesn't need to be manually created)
+  * New enum: `SystemModel`
+  * Both `ConfigSaveReader` and `ConfigSaveBlockParser` are importable from `pyctr.type.config`
+* Add `flush` to `SubsectionIO`
+* Optimize `CTRFileIO` to re-use existing cipher object when possible (seeking invalidates the current one)
+* Optimize `RomFSReader` by reading entire directory and file metadata at once before traversing, significantly reducing the amount of read calls to the underlying file
+* Optimize `RomFSReader` to reduce the read calls for the header (once for raw lv3, twice for IVFC)
+* Check for unformatted saves in `DISA` (the first 0x20 bytes are all NULL and the rest is garbage)
+* Remove `crypto_method == 0` check for NCCH files using `fixed_crypto_key`
+* Add `nand` module with `NAND` class, to read and write to a NAND image
+* Add `__slots__` to a bunch of classes (`CCIReader`, `CDNReader`, `CIAReader`, `ExeFSReader`, `NAND`, `NCCHReader`, `RomFSReader`, `SDFilesystem`, `SDTitleReader`, `SMDH`, `ConfigSaveReader`, `TypeReaderBase`, `TypeReaderCryptoBase`)
+* Update copyright year
+* Various documentation and type hint changes
+  * Add new `FilePath` and `FilePathOrObject` types
+* Add `__slots__` to `SubsectionIO` and `SplitFileMerger`
+* Add some tests for `romfs` and `smdh`
+* Load all boot9 keys in `CryptoEngine.setup_keys_from_boot9`
+* Moved package metadata to `setup.cfg`
+* Fix setting fixed keys in `CryptoEngine` and add debug logging to key setting
+* Separate NCSD header loading from `NAND` to a separate class `NANDNCSDHeader`
+* Refactor the `nand` module and `NAND` class:
+  * Add support for virtual sections (things that are not NCSD partitions)
+  * Rename `open_ncsd_partition` to `oprn_raw_section`
+  * Add custom section IDs that always point to the correct partition, regardless of its physical location
+  * Add custom section ID for GodMode9 bonus volume
+* Add documentation files created with sphinx-autodoc
+* Switch Sphinx theme to rtd, add example-cia, add info to index page
+* Move RomFS header loading in `RomFSReader` to a new `RomFSLv3Header` class
+* Many different documentation changes or additions
+* Require Python 3.8
+* Create new and update documentation pages - `example-nand` and `pyctr.type.nand`
+* Fix `closefd` being default to True always in `NAND`
+* Create documentation page for `pyctr.type.sd`
+* Create documentation page for `pyctr.fileio`
+* Create documentation page for `pyctr.util`
+* Fixes to `ConfigSaveReader`:
+  * `data_offset` is not hardcoded to `0x41E4`, it's based on the amount of data from the blocks
+  * CFG adds data to save from end to start when the block data is > 4 bytes, so now we are replicating this behavior and generating a proper `data_offset` and data sorting when using `to_bytes`
+  * Added sanity checks while parsing a config save
+  * `set_block` previously didn't allowed `None` in flags despite being stated to default to `0xE`
+* New attribute for SMDH: `SMDH.region_lockout`, with a new NamedTuple `SMDHRegionLockout`
+* New attribute for CCIReader: `CCIReader.cart_region`, with a new Enum `CCICartRegion`
+* `ConfigSaveReader.set_block` will now check Block IDs, flags, and sizes against a known list of blocks
+  * Passing `strict=True` to `set_block` will bypass this
+* `KNOWN_BLOCKS` in `pyctr.type.config.save` was changed to have values be dicts with "flags" and "size" keys (instead of plain tuples)
+* Switch `get_*` and `set_*` to getters and setters in `pyctr.type.config.blocks
+  * e.g. `username` instead of `get_username` and `set_username`
+* Add new `from_bytes` and `__bytes__` methods to `AppTitle` to load title structures (and modify `SMDH` to use this now)
+
+## v0.6.0 - January 26, 2022
+### Highlights
+Pillow is now an optional dependency. It is available through the extra feature `images`. This means to use `pyctr[images]` when adding to `setup.py`, `requirements.txt`, or `pip install`.
+
+SMDH icon data is stored into an array like `[[(1, 2, 3), (4, 5, 6), ...]]`. It can be used with other libraries like the pure-python pypng, for example:
+
+```python
+from pyctr.type.cia import CIAReader
+from itertools import chain
+import png
+
+my_cia = CIAReader('game.cia')
+
+# pypng expects an array like [[1, 2, 3, 4, 5, 6, ...]] so we need to flatten the inner lists
+img = png.from_array(
+  (chain.from_iterable(x) for x in my_cia.contents[0].exefs.icon.icon_large_array),
+  'RGB', {'width': 48, 'height': 48}
+)
+img.save('icon.png')
+```
+
+### Changelog
+* Move around object attribute initialization in cci, cdn, cia, and sdtitle, to prevent extra exceptions if an error is raised early
+* Use `open_raw_section` internally when initializing a `CIAReader` object, instead of manually seeking and reading
+* Make Pillow an optional dependency and make SMDH load icon data into an array (useful for other libraries like pypng)
+  * New functions in `smdh`: `rgb565_to_rgb888_tuple`, `load_tiled_rgb565_to_array`, `rgb888_array_to_image`
+  * Init arguments for `SMDH` were changed to accept icon data arrays instead of Pillow `Image` objects
+  * Pillow is added to `extras_require` under the feature `images`
+* Documentation tweaks to `smdh`
+* Remove unused import in `cia`
+
 ## v0.5.1 - June 28, 2021
 * Fix arbitrary reads in the first 0x10 block of `CBCFileIO`
 

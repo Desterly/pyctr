@@ -1,6 +1,6 @@
 # This file is a part of pyctr.
 #
-# Copyright (c) 2017-2021 Ian Burgwin
+# Copyright (c) 2017-2023 Ian Burgwin
 # This file is licensed under The MIT License (MIT).
 # You can find the full license text in LICENSE in the root of this project.
 
@@ -9,12 +9,15 @@ from hashlib import sha256
 from struct import pack
 from typing import TYPE_CHECKING, NamedTuple
 
-from ..common import PyCTRError
+from ..common import PyCTRError, get_fs_file_object
 from ..util import readbe, readle
 
 if TYPE_CHECKING:
-    from os import PathLike
-    from typing import BinaryIO, Iterable, Union
+    from typing import BinaryIO, Iterable, Optional
+
+    from fs.base import FS
+
+    from ..common import FilePath
 
 __all__ = ['CHUNK_RECORD_SIZE', 'TitleMetadataError', 'InvalidSignatureTypeError', 'InvalidHashError',
            'ContentInfoRecord', 'ContentChunkRecord', 'ContentTypeFlags', 'TitleVersion', 'TitleMetadataReader']
@@ -379,6 +382,6 @@ class TitleMetadataReader:
                    _u_access_rights=u_access_rights, _u_boot_count=u_boot_count, _u_padding=u_padding)
 
     @classmethod
-    def from_file(cls, fn: 'Union[PathLike, str, bytes]', *, verify_hashes: bool = True) -> 'TitleMetadataReader':
-        with open(fn, 'rb') as f:
+    def from_file(cls, fn: 'FilePath', *, fs: 'Optional[FS]' = None, verify_hashes: bool = True) -> 'TitleMetadataReader':
+        with get_fs_file_object(fn, fs)[0] as f:
             return cls.load(f, verify_hashes=verify_hashes)
